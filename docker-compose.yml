@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  # 1. Squint OCR Engine (Go + Tesseract)
+  squint-ocr:
+    build:
+      context: ./squint-ocr
+      dockerfile: Dockerfile
+    container_name: squint_ocr_service
+    restart: always
+    expose:
+      - "8080"
+    # Optional resource constraints since Tesseract can be CPU heavy
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 512M
+
+ 
