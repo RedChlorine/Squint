@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt" // Added to safely format and append real underlying errors
 	"io"
 	"log"
 	"net/http"
@@ -30,18 +31,17 @@ func ocrHandler(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	// Downlood the image into RAM - circumvents the need to store images on disk
+	// Download the image into RAM - circumvents the need to store images on disk
 	response, err := http.Get(imageURL)
-	// Handle potential errors during image download
+	// Handle potential errors during image download (Exposes exact network/DNS errors)
 	if err != nil {
 		writer.WriteHeader(http.StatusBadGateway)
 		json.NewEncoder(writer).Encode(OCRRequest{
 			Status: "error",
-			Error:  "[SQUINT]: Failed to download image",
+			Error:  fmt.Sprintf("[SQUINT]: Failed to download image. Reason: %v", err),
 		})
 		return
 	}
-	// Ensure the response body is closed after downloading the image
 	defer response.Body.Close()
 
 	// Read the image data into memory
@@ -50,29 +50,35 @@ func ocrHandler(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(http.StatusFailedDependency)
 		json.NewEncoder(writer).Encode(OCRRequest{
 			Status: "error",
-			Error:  "[SQUINT]: Failed to read image stream",
+			Error:  fmt.Sprintf("[SQUINT]: Failed to read image stream. Reason: %v", err),
 		})
 		return
 	}
 
 	// Init Tesseract OCR engine now that we have the image data in memory
-	tesseractClient := gosseract.NewClient()
+	tesseractClient := json_init_tesseract()
 	defer tesseractClient.Close() // CRITICAL: Ensure the Tesseract client is properly closed to free resources
 
 	// Config Tesseract to read L-R, T-B text (common for most languages)
-	// PSM 6(Single Block Mode) is suitable for block of text, which is common in Telegram images
 	tesseractClient.SetPageSegMode(gosseract.PSM_SINGLE_BLOCK)
 
 	// Pass RAM buffer to Tesseract for OCR processing
-	tesseractClient.SetImageFromBytes(imgBytes)
+	if err := tesseractClient.SetImageFromBytes(imgBytes); err != nil {
+		writer.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(writer).Encode(OCRRequest{
+			Status: "error",
+			Error:  fmt.Sprintf("[SQUINT]: Failed to load image bytes into Tesseract. Reason: %v", err),
+		})
+		return
+	}
 
-	// Perform OCR and capture the extracted text
+	// Perform OCR and capture the extracted text (Exposes hidden C++ initialization errors)
 	text, err := tesseractClient.Text()
 	if err != nil {
 		writer.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(writer).Encode(OCRRequest{
 			Status: "error",
-			Error:  "[SQUINT]: OCR processing failed",
+			Error:  fmt.Sprintf("[SQUINT]: OCR processing failed inside Tesseract C++ core. Reason: %v", err),
 		})
 		return
 	}
@@ -82,6 +88,12 @@ func ocrHandler(writer http.ResponseWriter, request *http.Request) {
 		Text:   text,
 		Status: "[SQUINT]: Success",
 	})
+}
+
+// Helper instantiation layer to encapsulate gosseract client setup
+func json_init_tesseract() *gosseract.Client {
+	client := gosseract.NewClient()
+	return client
 }
 
 func main() {
