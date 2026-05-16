@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"time"
 
 	"github.com/otiai10/gosseract/v2"
 )
@@ -122,8 +123,14 @@ func ocrHandler(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	// Download image using the browser spoof to bypass scraping blockers (e.g., Wikimedia)
-	client := &http.Client{}
-	req, _ := http.NewRequest("GET", imageURL, nil)
+	// Fixed: Added timeout to prevent indefinite hangs
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest("GET", imageURL, nil)
+	if err != nil {
+		writer.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(writer).Encode(OCRResponse{Status: "error", Error: fmt.Sprintf("[SQUINT]: Invalid URL: %v", err)})
+		return
+	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
 	response, err := client.Do(req)
@@ -148,7 +155,8 @@ func ocrHandler(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	// Create a communication channel and dispatch the job to the workers
-	resultChan := make(chan JobResult)
+	// Fixed: Use buffered channel with capacity 1 to prevent goroutine leaks
+	resultChan := make(chan JobResult, 1)
 	job := Job{
 		ImageBytes: imgBytes,
 		ResultChan: resultChan,
