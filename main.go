@@ -44,6 +44,17 @@ func ocrHandler(writer http.ResponseWriter, request *http.Request) {
 	}
 	defer response.Body.Close()
 
+	// Explicitly validate the server returned 200 OK
+	// Prevents passing 404/500 text error fragments into the C++ binary wrapper
+	if response.StatusCode != http.StatusOK {
+		writer.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(writer).Encode(OCRRequest{
+			Status: "error",
+			Error:  fmt.Sprintf("[SQUINT]: Remote host returned HTTP Status %d instead of 200 OK. Verify your image source link.", response.StatusCode),
+		})
+		return
+	}
+
 	// Read the image data into memory
 	imgBytes, err := io.ReadAll(response.Body)
 	if err != nil {

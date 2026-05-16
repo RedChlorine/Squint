@@ -35,6 +35,6 @@ def test_squint_ocr(image_url):
 
 if __name__ == "__main__":
     # Feel free to replace this with any direct image link that contains text
-    sample_image = "https://raw.githubusercontent.com/otiai10/gosseract/master/test/data/sample.png"
+    sample_image = "https://raw.githubusercontent.com/otiai10/gosseract/main/test/data/001-helloworld.png"
     
     test_squint_ocr(sample_image)
