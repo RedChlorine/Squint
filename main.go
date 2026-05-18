@@ -15,10 +15,10 @@ import (
 
 // Config represents the customizable parameters for the OCR Engine
 type Config struct {
-	WorkerPoolSize   int `json:"worker_pool_size"`
-	QueueBufferSize  int `json:"queue_buffer_size"`
-	Port             int `json:"port"`
-	MaxImageSizeMB   int `json:"max_image_size_mb"`
+	WorkerPoolSize  int `json:"worker_pool_size"`
+	QueueBufferSize int `json:"queue_buffer_size"`
+	Port            int `json:"port"`
+	MaxImageSizeMB  int `json:"max_image_size_mb"`
 }
 
 // Job represents an OCR task waiting for an available worker thread
@@ -202,7 +202,7 @@ func ocrHandler(writer http.ResponseWriter, request *http.Request) {
 				Status: "[SQUINT]: Success",
 			})
 			log.Printf("[SQUINT]: Successfully processed request from %s\n", request.RemoteAddr)
-			imgBytes = nil // Clear image from memory
+
 		case <-time.After(30 * time.Second):
 			writer.WriteHeader(http.StatusRequestTimeout)
 			json.NewEncoder(writer).Encode(OCRResponse{Status: "error", Error: "[SQUINT]: Worker processing timeout (30s exceeded)"})
