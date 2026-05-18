@@ -15,9 +15,10 @@ import (
 
 // Config represents the customizable parameters for the OCR Engine
 type Config struct {
-	WorkerPoolSize  int `json:"worker_pool_size"`
-	QueueBufferSize int `json:"queue_buffer_size"`
-	Port            int `json:"port"`
+	WorkerPoolSize   int `json:"worker_pool_size"`
+	QueueBufferSize  int `json:"queue_buffer_size"`
+	Port             int `json:"port"`
+	MaxImageSizeMB   int `json:"max_image_size_mb"`
 }
 
 // Job represents an OCR task waiting for an available worker thread
@@ -47,6 +48,7 @@ func loadConfig() {
 		WorkerPoolSize:  runtime.NumCPU(), // Default to available cores
 		QueueBufferSize: 100,
 		Port:            8080,
+		MaxImageSizeMB:  10, // Default to 10 MB
 	}
 
 	file, err := os.Open("config.json")
@@ -67,6 +69,9 @@ func loadConfig() {
 	}
 	if appConfig.QueueBufferSize < 1 {
 		appConfig.QueueBufferSize = 10
+	}
+	if appConfig.MaxImageSizeMB < 1 {
+		appConfig.MaxImageSizeMB = 10
 	}
 	log.Println("[SQUINT]: Successfully loaded configuration from config.json")
 }
@@ -130,17 +135,18 @@ func ocrHandler(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	// 2. Parse the multipart form (Limit upload size to 10MB to protect memory)
-	err := request.ParseMultipartForm(10 << 20)
+	// 2. Parse the multipart form (Limit upload size using configured MaxImageSizeMB)
+	maxSize := int64(appConfig.MaxImageSizeMB) << 20
+	err := request.ParseMultipartForm(maxSize)
 	if err != nil {
 		writer.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(writer).Encode(OCRResponse{Status: "error", Error: "[SQUINT]: Failed to parse form or file exceeds 10MB limit"})
+		json.NewEncoder(writer).Encode(OCRResponse{Status: "error", Error: fmt.Sprintf("[SQUINT]: Failed to parse form or file exceeds %d MB limit", appConfig.MaxImageSizeMB)})
 		log.Printf("[SQUINT]: Failed to parse multipart form from %s: %v\n", request.RemoteAddr, err)
 		return
 	}
 
 	// 3. Retrieve the file from the form data (Expecting the key "image")
-	file, _, err := request.FormFile("image")
+	file, fileHeader, err := request.FormFile("image")
 	if err != nil {
 		writer.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(writer).Encode(OCRResponse{Status: "error", Error: "[SQUINT]: Missing 'image' file in form data"})
@@ -148,6 +154,15 @@ func ocrHandler(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	defer file.Close()
+
+	// Pre-flight file size check
+	fileSizeKB := fileHeader.Size / 1024
+	if fileHeader.Size > maxSize {
+		writer.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(writer).Encode(OCRResponse{Status: "error", Error: fmt.Sprintf("[SQUINT]: File exceeds %d MB limit", appConfig.MaxImageSizeMB)})
+		log.Printf("[SQUINT]: REJECTED oversized file from %s: %s (%d KB, max: %d MB)\n", request.RemoteAddr, fileHeader.Filename, fileSizeKB, appConfig.MaxImageSizeMB)
+		return
+	}
 
 	// 4. Read the file bytes directly into memory
 	imgBytes, err := io.ReadAll(file)
@@ -157,6 +172,8 @@ func ocrHandler(writer http.ResponseWriter, request *http.Request) {
 		log.Printf("[SQUINT]: Failed to read image bytes from %s: %v\n", request.RemoteAddr, err)
 		return
 	}
+
+	log.Printf("[SQUINT]: Read image file %s from %s (%d KB)\n", fileHeader.Filename, request.RemoteAddr, fileSizeKB)
 
 	// 5. Create a communication channel and dispatch the job to the workers
 	resultChan := make(chan JobResult, 1)
@@ -185,6 +202,7 @@ func ocrHandler(writer http.ResponseWriter, request *http.Request) {
 				Status: "[SQUINT]: Success",
 			})
 			log.Printf("[SQUINT]: Successfully processed request from %s\n", request.RemoteAddr)
+			imgBytes = nil // Clear image from memory
 		case <-time.After(30 * time.Second):
 			writer.WriteHeader(http.StatusRequestTimeout)
 			json.NewEncoder(writer).Encode(OCRResponse{Status: "error", Error: "[SQUINT]: Worker processing timeout (30s exceeded)"})
