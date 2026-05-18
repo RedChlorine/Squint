@@ -8,20 +8,24 @@ An OCR (Optical Character Recognition) microservice built with Go and Tesseract,
 - **Secondary Language**: Python (28.5%)
 - **Type**: Microservice
 - **API**: RESTful HTTP interface
+- **Architecture**: Multi-threaded worker pool with queue-based job processing
 
 ## 🚀 Features
 
-- **HTTP REST API** - Simple endpoint to process images and extract text
-- **In-Memory Processing** - Images are downloaded and processed in RAM without disk storage
+- **HTTP REST API** - Simple POST endpoint to process images and extract text
+- **Multipart Form Upload** - Direct image file upload via multipart/form-data
+- **Worker Pool Architecture** - Configurable worker threads with queue-based job distribution
 - **Tesseract Integration** - Leverages the powerful open-source Tesseract OCR engine
-- **Telegram Image Support** - Built to work with Telegram image URLs
+- **In-Memory Processing** - Images are processed directly in memory without disk storage
+- **Configurable** - Customizable worker pool size, queue buffer, and max image size via config.json
 - **Docker Ready** - Includes Docker and Docker Compose configuration for easy deployment
 - **Comprehensive Error Handling** - Detailed error messages for debugging and monitoring
+- **Thread-Safe** - Uses OS-level thread locking for CGO stability with concurrent requests
 
 ## 📋 Requirements
 
-- Go 1.x or later
-- Tesseract OCR engine
+- Go 1.25 or later
+- Tesseract OCR engine (5.x recommended)
 - Docker & Docker Compose (for containerized deployment)
 - Python 3.x (for testing scripts)
 
@@ -41,11 +45,21 @@ go mod download
 ```
 
 3. Install Tesseract OCR (system dependency):
-   - **Ubuntu/Debian**: `sudo apt-get install tesseract-ocr`
+   - **Ubuntu/Debian**: `sudo apt-get install tesseract-ocr tesseract-ocr-eng`
    - **macOS**: `brew install tesseract`
    - **Windows**: Download from [GNU Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki)
 
-4. Run the service:
+4. (Optional) Configure settings in `config.json`:
+```json
+{
+    "worker_pool_size": 4,
+    "queue_buffer_size": 50,
+    "port": 8080,
+    "max_image_size_mb": 10
+}
+```
+
+5. Run the service:
 ```bash
 go run main.go
 ```
@@ -70,68 +84,87 @@ docker run -p 8080:8080 squint
 ### Endpoint
 
 ```
-GET /api/v1/ocr?image_url=<url>
+POST /api/v1/ocr
 ```
 
 ### Parameters
 
-- `image_url` (required): URL of the image to process (supports Telegram image URLs, HTTP/HTTPS URLs, and other public image URLs)
+- `image` (required): Image file uploaded via multipart/form-data (supports JPEG, PNG, BMP, GIF, TIFF, and other formats supported by Tesseract)
 
 ### Request Examples
 
-**Basic usage with a public image URL:**
+**Using cURL:**
 ```bash
-curl "http://localhost:8080/api/v1/ocr?image_url=https://example.com/image.jpg"
-```
-
-**With a Telegram image URL:**
-```bash
-curl "http://localhost:8080/api/v1/ocr?image_url=https://t.me/channel/message"
+curl -X POST -F "image=@/path/to/image.jpg" "http://localhost:8080/api/v1/ocr"
 ```
 
 **Using JavaScript/Fetch:**
 ```javascript
-const imageUrl = 'https://example.com/image.jpg';
-fetch(`http://localhost:8080/api/v1/ocr?image_url=${encodeURIComponent(imageUrl)}`)
+const formData = new FormData();
+formData.append('image', fileInputElement.files[0]);
+
+fetch('http://localhost:8080/api/v1/ocr', {
+  method: 'POST',
+  body: formData
+})
   .then(response => response.json())
   .then(data => console.log('Extracted text:', data.text))
   .catch(error => console.error('Error:', error));
 ```
 
-**Using Python:**
+**Using Python (with requests library):**
 ```python
 import requests
 
-image_url = 'https://example.com/image.jpg'
-response = requests.get('http://localhost:8080/api/v1/ocr', params={'image_url': image_url})
-data = response.json()
-print('Extracted text:', data['text'])
+with open('/path/to/image.jpg', 'rb') as img_file:
+    files = {'image': img_file}
+    response = requests.post('http://localhost:8080/api/v1/ocr', files=files)
+    data = response.json()
+    print('Extracted text:', data['text'])
 ```
 
-### Response Example (Success)
+### Response Example (Success - 200 OK)
 
 ```json
 {
   "text": "The extracted text from the image",
-  "status": "[SQUINT]: Success"
+  "status": "✅ Success"
 }
 ```
 
-### Response Example (Error - Missing Parameter)
+### Response Example (Error - Missing Image - 400 Bad Request)
 
 ```json
 {
   "status": "error",
-  "error": "[SQUINT]: Missing image_url parameter"
+  "error": "❌ Missing 'image' file in form data"
 }
 ```
 
-### Response Example (Error - Download Failed)
+### Response Example (Error - File Too Large - 400 Bad Request)
 
 ```json
 {
   "status": "error",
-  "error": "[SQUINT]: Failed to download image from URL"
+  "error": "❌ File exceeds 10 MB limit"
+}
+```
+
+### Response Example (Error - Processing Timeout - 408 Request Timeout)
+
+```json
+{
+  "status": "error",
+  "error": "⏱️  Worker processing timeout (30s exceeded)"
+}
+```
+
+### Response Example (Error - Queue Full - 503 Service Unavailable)
+
+```json
+{
+  "status": "error",
+  "error": "🔄 Job queue full, service unavailable"
 }
 ```
 
@@ -140,16 +173,18 @@ print('Extracted text:', data['text'])
 | Status Code | Scenario |
 |---|---|
 | `200 OK` | OCR processing successful |
-| `400 Bad Request` | Missing or invalid `image_url` parameter |
-| `502 Bad Gateway` | Failed to download image from URL |
-| `424 Failed Dependency` | Failed to read image stream |
-| `500 Internal Server Error` | Tesseract OCR processing failed |
+| `400 Bad Request` | Missing image file or file exceeds size limit |
+| `405 Method Not Allowed` | Non-POST request to the endpoint |
+| `408 Request Timeout` | Worker processing exceeded 30 seconds |
+| `500 Internal Server Error` | Tesseract OCR processing failed or image stream read error |
+| `503 Service Unavailable` | Job queue full, unable to accept new requests |
 
 ## 📦 Project Structure
 
 ```
 Squint/
-├── main.go                 # Main application code with HTTP handler
+├── main.go                 # Main application with HTTP handler and worker pool
+├── config.json             # Configuration file (worker pool, queue, port, max file size)
 ├── go.mod                  # Go module definition
 ├── go.sum                  # Go module checksums
 ├── dockerfile              # Docker container configuration
@@ -162,26 +197,53 @@ Squint/
 
 A Python test script is included to validate the OCR service:
 
+1. Place test images in a `test_images` directory:
 ```bash
-# Install test dependencies (if needed)
+mkdir test_images
+# Copy your .jpg, .png, .bmp, .tiff files into test_images/
+```
+
+2. Run the test script:
+```bash
+# Install dependencies (if needed)
 pip install requests
 
-# Run the test script
+# Run the tests
 python test_squint.py
 ```
 
-The test script will perform several requests to verify the OCR service is working correctly.
+The test script will process all images in the `test_images` directory and display the extracted text.
 
 ## 🏗️ How It Works
 
-1. **Receives Request** - Client sends GET request with `image_url` parameter
-2. **Validates Input** - Ensures the `image_url` parameter is provided
-3. **Downloads Image** - Service downloads the image directly into RAM
-4. **Initializes Tesseract** - Creates and configures a Tesseract OCR client
-5. **Processes Image** - Tesseract extracts text from the image bytes
-6. **Returns Result** - Responds with extracted text in JSON format
+1. **Application Startup** - Loads configuration and spins up a worker pool with configurable parallel Tesseract daemons
+2. **Worker Pool** - Each worker thread is bound to a dedicated OS thread for CGO stability
+3. **Receives Request** - Client sends POST request with an image file via multipart/form-data
+4. **Validates Input** - Ensures the 'image' parameter is provided and file doesn't exceed size limit
+5. **Queues Job** - Dispatches OCR job to the worker queue with a 5-second timeout
+6. **Worker Processing** - Available worker picks up job, processes image through Tesseract with 30-second timeout
+7. **Returns Result** - Responds with extracted text in JSON format
 
-The service uses single-block page segmentation mode for optimal text extraction from most common image layouts.
+The service uses single-block page segmentation mode (PSM_SINGLE_BLOCK) for optimal text extraction from most common image layouts.
+
+## ⚙️ Configuration
+
+The `config.json` file allows customization:
+
+```json
+{
+    "worker_pool_size": 4,      // Number of parallel OCR workers (defaults to CPU count)
+    "queue_buffer_size": 50,    // Size of the job queue buffer
+    "port": 8080,               // HTTP server port
+    "max_image_size_mb": 10     // Maximum image file size in MB
+}
+```
+
+**Default Behavior**: If `config.json` is missing or invalid, the service uses safe defaults:
+- `worker_pool_size`: Number of available CPU cores
+- `queue_buffer_size`: 100
+- `port`: 8080
+- `max_image_size_mb`: 10 MB
 
 ## 📝 Dependencies
 
@@ -189,18 +251,21 @@ The service uses single-block page segmentation mode for optimal text extraction
 - `github.com/otiai10/gosseract/v2` - Go wrapper for Tesseract OCR
 
 ### System Dependencies
-- Tesseract OCR engine
+- Tesseract OCR engine (v5.x recommended)
+- Tesseract language data (English included by default)
 
 ### Python Test Dependencies
 - `requests` - HTTP library for Python
 
 ## 💡 Tips & Best Practices
 
-- **Large Images**: The service processes images in memory. For very large images, ensure your server has sufficient RAM.
-- **Timeout Handling**: Consider setting timeouts on the client side for slow image downloads.
-- **URL Encoding**: Make sure to properly URL-encode the `image_url` parameter if it contains special characters.
-- **Supported Formats**: Works with JPEG, PNG, GIF, BMP, TIFF, and other common image formats supported by Tesseract.
-- **Performance**: First request may take longer as Tesseract initializes; subsequent requests are faster.
+- **Worker Pool Tuning**: Set `worker_pool_size` to match your CPU count for I/O-heavy tasks, or higher for CPU-heavy OCR workloads
+- **Queue Buffer**: Increase `queue_buffer_size` if you expect burst traffic
+- **Large Images**: The service processes images in memory. For very large images, ensure your server has sufficient RAM
+- **File Size Limits**: Adjust `max_image_size_mb` based on your memory constraints
+- **Performance**: First OCR request may take slightly longer as Tesseract initializes; subsequent requests are faster
+- **Concurrency**: Each worker thread is OS-locked for maximum CGO stability
+- **Language Support**: Additional language data can be installed via `tesseract-ocr-<lang>` packages
 
 ## 📄 License
 
@@ -216,4 +281,4 @@ Created by [@RedChlorine](https://github.com/RedChlorine)
 
 ---
 
-**Note**: This is a private repository. Please ensure you have appropriate permissions to access and use this code.
+**Last Updated**: 2026-05-18
