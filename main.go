@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"time"
 
 	"github.com/otiai10/gosseract/v2"
 )
@@ -164,21 +165,36 @@ func ocrHandler(writer http.ResponseWriter, request *http.Request) {
 		ResultChan: resultChan,
 	}
 
-	jobQueue <- job              // Send to the pool
-	workerResult := <-resultChan // Block and wait for a worker to finish
+	// Use a non-blocking send with timeout to detect queue saturation
+	select {
+	case jobQueue <- job:
+		log.Printf("[SQUINT]: Job queued for request from %s\n", request.RemoteAddr)
+		// Successfully queued, now wait for result with timeout
+		select {
+		case workerResult := <-resultChan:
+			if workerResult.Error != nil {
+				writer.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(writer).Encode(OCRResponse{Status: "error", Error: workerResult.Error.Error()})
+				log.Printf("[SQUINT]: Worker error for request from %s: %v\n", request.RemoteAddr, workerResult.Error)
+				return
+			}
 
-	if workerResult.Error != nil {
-		writer.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(writer).Encode(OCRResponse{Status: "error", Error: workerResult.Error.Error()})
-		log.Printf("[SQUINT]: Worker error for request from %s: %v\n", request.RemoteAddr, workerResult.Error)
-		return
+			// 6. Return success
+			json.NewEncoder(writer).Encode(OCRResponse{
+				Text:   workerResult.Text,
+				Status: "[SQUINT]: Success",
+			})
+			log.Printf("[SQUINT]: Successfully processed request from %s\n", request.RemoteAddr)
+		case <-time.After(30 * time.Second):
+			writer.WriteHeader(http.StatusRequestTimeout)
+			json.NewEncoder(writer).Encode(OCRResponse{Status: "error", Error: "[SQUINT]: Worker processing timeout (30s exceeded)"})
+			log.Printf("[SQUINT]: Worker timeout for request from %s\n", request.RemoteAddr)
+		}
+	case <-time.After(5 * time.Second):
+		writer.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(writer).Encode(OCRResponse{Status: "error", Error: "[SQUINT]: Job queue full, service unavailable"})
+		log.Printf("[SQUINT]: Queue timeout for request from %s\n", request.RemoteAddr)
 	}
-
-	// 6. Return success
-	json.NewEncoder(writer).Encode(OCRResponse{
-		Text:   workerResult.Text,
-		Status: "[SQUINT]: Success",
-	})
 }
 
 func main() {
