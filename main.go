@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
 // OCRResponse structure to ensure we don't leak excessive data
@@ -20,37 +24,35 @@ type SquintAPI struct {
 	ocrEngine OCREngine
 }
 
-// loadConfig reads the configuration from a JSON file and returns a Config struct. If the file is missing or malformed, it falls back to default settings.
+// loadConfig reads the configuration from a JSON file and returns a Config struct.
 func loadConfig() Config {
-	// Set a default fallback config
 	cfg := Config{EnablePreprocessing: false}
-
-	// Attempt to read the file
 	file, err := os.ReadFile("config.json")
 	if err != nil {
 		fmt.Println("[WARN] config.json not found, using default configuration.")
 		return cfg
 	}
-
-	// Parse the JSON into the struct
 	if err := json.Unmarshal(file, &cfg); err != nil {
 		fmt.Printf("[WARN] Failed to parse config.json, using defaults: %v\n", err)
 	}
-
 	fmt.Printf("[INFO] Loaded configuration: Pre-processing = %v\n", cfg.EnablePreprocessing)
 	return cfg
 }
 
 func main() {
-	// Inject the TesseractEngine into the SquintAPI
-	server := &SquintAPI{
-		ocrEngine: &TesseractEngine{},
+	// 1. Load config and inject it into the engine
+	appConfig := loadConfig()
+
+	apiHandler := &SquintAPI{
+		ocrEngine: &TesseractEngine{
+			Cfg: appConfig,
+		},
 	}
 
-	// 1. Register all routes FIRST
-	http.HandleFunc("/api/v2/ocr", server.handleOCRUpload)
-
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	// 2. Create a custom multiplexer for our routes
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v2/ocr", apiHandler.handleOCRUpload)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
@@ -59,11 +61,37 @@ func main() {
 		w.Write([]byte(`{"status":"running","service":"squint-ocr"}`))
 	})
 
-	// 2. Start the server LAST
-	fmt.Println("[INFO] Squint OCR service starting on port 8080...")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		fmt.Printf("[FATAL] Server failed: %v\n", err)
+	// 3. Define the HTTP server explicitly
+	srv := &http.Server{
+		Addr:    ":8080",
+		Handler: mux,
 	}
+
+	// 4. Start the server in a background Goroutine
+	go func() {
+		fmt.Println("[INFO] Squint OCR service starting on port 8080...")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Printf("[FATAL] Server failed: %v\n", err)
+		}
+	}()
+
+	// 5. Set up a channel to listen for OS termination signals
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+
+	// Block main thread until a signal is received
+	<-quit
+	fmt.Println("\n[INFO] Shutdown signal received. Shutting down gracefully...")
+
+	// 6. Create a deadline context to give active requests 10 seconds to finish
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		fmt.Printf("[FATAL] Server forced to shutdown: %v\n", err)
+	}
+
+	fmt.Println("[INFO] Server exiting properly.")
 }
 
 func (api *SquintAPI) handleOCRUpload(writer http.ResponseWriter, requester *http.Request) {
@@ -131,7 +159,7 @@ func (api *SquintAPI) handleOCRUpload(writer http.ResponseWriter, requester *htt
 		return
 	}
 
-	// Rewind the file pointer back to the beginning so the OCR engine can read the whole image
+	// Rewind the file pointer back to the beginning
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		writer.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(writer).Encode(OCRResponse{Success: false, Error: "Failed to reset file pointer"})
@@ -157,7 +185,6 @@ func (api *SquintAPI) handleOCRUpload(writer http.ResponseWriter, requester *htt
 		Text:    text,
 	}
 
-	// Create an encoder and tell it to use spaces for indentation
 	encoder := json.NewEncoder(writer)
 	encoder.SetEscapeHTML(false)
 	encoder.SetIndent("", "  ")
