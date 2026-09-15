@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 )
 
 // OCRResponse structure to ensure we don't leak excessive data
@@ -17,6 +18,27 @@ type OCRResponse struct {
 // SquintAPI encapsulates our endpoints and dependencies
 type SquintAPI struct {
 	ocrEngine OCREngine
+}
+
+// loadConfig reads the configuration from a JSON file and returns a Config struct. If the file is missing or malformed, it falls back to default settings.
+func loadConfig() Config {
+	// Set a default fallback config
+	cfg := Config{EnablePreprocessing: false}
+
+	// Attempt to read the file
+	file, err := os.ReadFile("config.json")
+	if err != nil {
+		fmt.Println("[WARN] config.json not found, using default configuration.")
+		return cfg
+	}
+
+	// Parse the JSON into the struct
+	if err := json.Unmarshal(file, &cfg); err != nil {
+		fmt.Printf("[WARN] Failed to parse config.json, using defaults: %v\n", err)
+	}
+
+	fmt.Printf("[INFO] Loaded configuration: Pre-processing = %v\n", cfg.EnablePreprocessing)
+	return cfg
 }
 
 func main() {
@@ -137,7 +159,7 @@ func (api *SquintAPI) handleOCRUpload(writer http.ResponseWriter, requester *htt
 
 	// Create an encoder and tell it to use spaces for indentation
 	encoder := json.NewEncoder(writer)
-	//encoder.SetEscapeHTML(false)
+	encoder.SetEscapeHTML(false)
 	encoder.SetIndent("", "  ")
 	encoder.Encode(response)
 }

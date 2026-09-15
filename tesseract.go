@@ -7,9 +7,14 @@ import (
 	"github.com/otiai10/gosseract/v2"
 )
 
+// Config defines the configuration for the OCR engine, allowing for future extensibility.
+type Config struct {
+	EnablePreprocessing bool `json:"enable_preprocessing"` // Whether to apply preprocessing steps to the image
+}
+
 // TesseractEngine
 type TesseractEngine struct {
-	// TODO: Add any necessary fields for configuration, e.g., language, config options
+	Cfg Config // config injection
 }
 
 // Process satisfies the OCREngine interface by processing the image and returning the extracted text.
@@ -22,9 +27,20 @@ func (tEngine *TesseractEngine) ProcessImage(image io.Reader) (string, error) {
 		return "", fmt.Errorf("failed to read image data: %w", err)
 	}
 
+	// Optional: If preprocessing is enabled, apply any image transformations here (e.g., grayscale, thresholding).
+	if tEngine.Cfg.EnablePreprocessing {
+		fmt.Println("[INFO] Preprocessing image...")
+	} else {
+		fmt.Println("[INFO] Skipping preprocessing as per configuration.")
+	}
+
 	// 2. Initialize the gosseract client
 	client := gosseract.NewClient()
 	defer client.Close() // Ensure we free up the C++ memory when done
+
+	// Force Tesseract to treat the image as a single, uniform block of text (PSM 6).
+	// This stops it from trying to read UI elements or scattered artifacts as columns.
+	client.SetPageSegMode(gosseract.PSM_SINGLE_BLOCK)
 
 	// 3. Hand the bytes to the engine
 	err = client.SetImageFromBytes(imgBytes)
