@@ -127,10 +127,17 @@ func (api *SquintAPI) handleOCRUpload(writer http.ResponseWriter, requester *htt
 		return
 	}
 
-	// Clean Data Return
+	// Clean Data Return (Pretty Printed)
 	writer.WriteHeader(http.StatusOK)
-	json.NewEncoder(writer).Encode(OCRResponse{
+
+	response := OCRResponse{
 		Success: true,
 		Text:    text,
-	})
+	}
+
+	// Create an encoder and tell it to use spaces for indentation
+	encoder := json.NewEncoder(writer)
+	//encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	encoder.Encode(response)
 }
