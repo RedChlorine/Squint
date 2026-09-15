@@ -1,7 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	"image/color"
+	_ "image/jpeg" // Register JPEG decoder
+	"image/png"    // For encoding back to PNG
 	"io"
 
 	"github.com/otiai10/gosseract/v2"
@@ -11,48 +16,83 @@ import (
 type Config struct {
 	EnablePreprocessing bool `json:"enable_preprocessing"` // Whether to apply preprocessing steps to the image
 }
-
-// TesseractEngine
 type TesseractEngine struct {
-	Cfg Config // config injection
+	Cfg Config
 }
 
-// Process satisfies the OCREngine interface by processing the image and returning the extracted text.
-func (tEngine *TesseractEngine) ProcessImage(image io.Reader) (string, error) {
+func (tEngine *TesseractEngine) ProcessImage(imageReader io.Reader) (string, error) {
 	fmt.Println("[INFO] Processing image with gosseract...")
 
-	// 1. Read the image stream into memory
-	imgBytes, err := io.ReadAll(image)
+	currentCfg := tEngine.Cfg
+
+	imgBytes, err := io.ReadAll(imageReader)
 	if err != nil {
 		return "", fmt.Errorf("failed to read image data: %w", err)
 	}
 
-	// Optional: If preprocessing is enabled, apply any image transformations here (e.g., grayscale, thresholding).
-	if tEngine.Cfg.EnablePreprocessing {
-		fmt.Println("[INFO] Preprocessing image...")
+	// 1. Conditional Image Matrix Manipulation
+	if currentCfg.EnablePreprocessing {
+		fmt.Println("[DEBUG] Pre-processing is ENABLED. Applying binarization...")
+		imgBytes, err = applyBinarization(imgBytes)
+		if err != nil {
+			return "", fmt.Errorf("image preprocessing failed: %w", err)
+		}
 	} else {
-		fmt.Println("[INFO] Skipping preprocessing as per configuration.")
+		fmt.Println("[DEBUG] Pre-processing is DISABLED. Skipping filters...")
 	}
 
-	// 2. Initialize the gosseract client
 	client := gosseract.NewClient()
-	defer client.Close() // Ensure we free up the C++ memory when done
+	defer client.Close()
 
-	// Force Tesseract to treat the image as a single, uniform block of text (PSM 6).
-	// This stops it from trying to read UI elements or scattered artifacts as columns.
 	client.SetPageSegMode(gosseract.PSM_SINGLE_BLOCK)
 
-	// 3. Hand the bytes to the engine
+	// 2. Hand the processed bytes to Tesseract
 	err = client.SetImageFromBytes(imgBytes)
 	if err != nil {
 		return "", fmt.Errorf("gosseract failed to set image: %w", err)
 	}
 
-	// 4. Execute the OCR
 	text, err := client.Text()
 	if err != nil {
 		return "", fmt.Errorf("gosseract failed to extract text: %w", err)
 	}
 
 	return text, nil
+}
+
+// applyBinarization converts the image to grayscale and applies a high-contrast threshold
+func applyBinarization(data []byte) ([]byte, error) {
+	// Decode the raw bytes into a Go image object
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+
+	bounds := img.Bounds()
+	grayImg := image.NewGray(bounds)
+
+	// Loop through every single pixel in the image grid
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			originalPixel := img.At(x, y)
+
+			// Convert the pixel to standard grayscale
+			grayPixel := color.GrayModel.Convert(originalPixel).(color.Gray)
+
+			// Thresholding: If darker than mid-gray (128), snap to black. Else, white.
+			if grayPixel.Y < 128 {
+				grayImg.SetGray(x, y, color.Gray{Y: 0}) // Pure Black
+			} else {
+				grayImg.SetGray(x, y, color.Gray{Y: 255}) // Pure White
+			}
+		}
+	}
+
+	// Encode the cleaned image back into a byte buffer using lossless PNG
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, grayImg); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
 }
