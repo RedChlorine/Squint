@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  squint-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: squint-api
+    ports:
+      - "8080:8080"
+    volumes:
+      # This maps your local config file directly into the container
+      - ./config.json:/app/config.json
+    restart: unless-stopped
